@@ -38,14 +38,23 @@ def parse(portNum,file):
     out = rtmidi.MidiOut()
     ports = out.get_ports()
     print(ports)
-    out.open_port(0)
+    print("port chosen: ",portNum)
+    out.open_port(int(portNum))
+    
     try:
         with open(file, 'rb') as ff:
-        
+            bpm = 0 #beat per minute
+            ppq = 0 #ppq read from header
+            tick = 0 #millisecond per tick
+            
             data_buffer_len = len(bytearray(ff.read()))
             ff.seek(0)
             
+            
             print("MIDI file name: ",file)
+            print("-------------")
+            print("MIDI file header")
+            print("-------------")
             print(ff.read(4))
             print("size ",int.from_bytes(ff.read(4)))
             print("format type ",int.from_bytes(ff.read(2)))
@@ -53,51 +62,79 @@ def parse(portNum,file):
             tdiv = ff.read(2)
             if (tdiv[0] & 0x80) == 0x00:
                 print("time division is ticks per beat, ticks=",tdiv," int=",int.from_bytes(tdiv))
+                ppq = int.from_bytes(tdiv)
             elif (tdiv[0] & 0x80) == 0x80:
                 print("time division is frames per s= ",int.from_bytes(tdiv[1])) 
             track_hdr = ff.read(4)
-            print("NEW TRACK",track_hdr)
+            print("-------------")
+            print("Track header")
+            print("-------------")
+            print(track_hdr)
             tracklength = ff.read(4)
-            print("length ",int.from_bytes(tracklength))
+            print("length: ",int.from_bytes(tracklength))
+            print("-------------")
             
             i=21
             ff.seek(22)
+            
+            last_cmd = 0x00
             while i < data_buffer_len:
+                nValue = 0
+                nValue2 = 0
+                nValue3 = 0
+                nValue4 = 0
                 #print(i)
                 # time delta portion
-                finalValue = 0
-                nValue = 0
-                nByte = 0
                 
-                nValue = ff.read(1)[0]
+                nValue = int.from_bytes(ff.read(1))
                 #print("nValue ",nValue)
                 i+=1
                 
-                if nValue & 0x80:
-                    nValue &= 0x7F
-                    while True:
-                        nByte = ff.read(1)[0]
-                        #print("nByte ",nByte)
+                #print("nValue before 0x8_ ",nValue)
+                if nValue & 0x0080:
+                    #print("nValue before crop ",nValue)
+                    nValue &= 0x007F
+                    #print("nValue after crop ",nValue)
+                    nValue <<= 7
+                    #print("nValue after shift ",nValue)
+                    nValue2 = int.from_bytes(ff.read(1))
+                    i+=1
+                    if nValue2 & 0x0080:
+                        nValue2 &= 0x007F
+                        nValue2 <<= 7
+                        nValue <<= 7
+                        nValue3 = int.from_bytes(ff.read(1))
                         i+=1
-                        finalValue = (nValue << 7) | (nByte & 0x7F)
-                        if not nByte & 0x80:
-                            break
-                    time.sleep(nValue/500)
-                
+                        if nValue3 & 0x0080:
+                            nValue3 &= 0x007F
+                            nValue3 <<= 7
+                            nValue2 <<= 7
+                            nValue <<= 7
+                            nValue4 = int.from_bytes(ff.read(1))
+                            i+=1
+                timeDelta = nValue | nValue2 | nValue3 | nValue4
+                #print("timeDelta ",timeDelta)
                 status_byte = ff.read(1)[0]
-                #print("eventByte ",status_byte)
-                i+=1                
+                i+=1 
+
+                #check for run-on commands that don't repeat the status_byte
+                if ( status_byte & 0x80) == 0x00:
+                    #print("********run-on command detected with cmd ",last_cmd)
+                    status_byte = last_cmd
+                    i-=1
+                    ff.seek(i) #go back 1 spot so it can read the data properly
+                    
                 # MIDI Meta-event portion
                 if (status_byte & 0xFF) == 0xFF:
                     meta_byte = int.from_bytes(ff.read(1))
                     print("Status Byte",status_byte,"Meta-Event",meta_byte)
                     i+=1
                     if meta_byte == MetaSequence:
-                        data1=ff.read(1)
-                        data2=ff.read(1)
-                        #notemsg = [status_byte, meta_byte, data1, data2] 
+                        data1=ff.read(1)[0]
+                        data2=ff.read(1)[0]
+                        notemsg = [status_byte, meta_byte, data1, data2] 
                         #print ("message is ",notemsg)
-                        #out.send_message(notemsg)
+                        out.send_message(notemsg)
                         print("  Sequence Number: ", data1, data2)
                         i+=2
                     elif meta_byte == MetaText:
@@ -143,26 +180,28 @@ def parse(portNum,file):
                         i+=tLen
                         print("  ",text)  	
                     elif meta_byte == MetaChannelPrefix:
-                        data1=ff.read(1)
-                        data2=ff.read(1)
+                        data1=ff.read(1)[0]
+                        data2=ff.read(1)[0]
                         #notemsg = [status_byte, meta_byte, data1, data2] 
                         #out.send_message(notemsg)
                         print("MIDI Channel Prefix: ", data1, data2)
                         i+=2	
                     elif meta_byte == MetaEndOfTrack:
-                        data1=ff.read(1)
+                        data1=ff.read(1)[0]
                         #notemsg = [status_byte, meta_byte, data1] 
                         #out.send_message(notemsg)
                         i+=1
-                        print("*** END OF TRACK")
+                        print("--------------------------------------------------- END OF TRACK")
                     elif meta_byte == MetaSetTempo:
                         data1=ff.read(1)[0]
                         data2=ff.read(1)[0]
                         data3=ff.read(1)[0]
                         data4=ff.read(1)[0]
+                        bpm = 6e7/(data2<<16 | data3 <<8 | data4)
                         #notemsg = [status_byte, meta_byte, data1, data2,data3,data4] 
                         #out.send_message(notemsg)
-                        print("  Tempo: ", data1, data2, data3, data4)
+                        print("  Tempo: ", data1, data2, data3, data4, " beats per min: ", int(bpm))
+                        tick = 60./(bpm*ppq)
                         i+=4	
                     elif meta_byte == MetaSMPTEOffset:
                         data1=ff.read(1)[0]
@@ -198,23 +237,26 @@ def parse(portNum,file):
                         pass	
                     else:
                         print("Unrecognised MetaEvent: ")
-                        
+                    #print("at i: ",i)  
         # Program change   0xC_
         # Channel Pressure 0xD_
                 elif 0xC0 <= status_byte <= 0xDF:
                     data1 = ff.read(1)[0]
                     notemsg = [status_byte,data1]
                     out.send_message(notemsg)
+                    #print("--program/channel change: ", status_byte)
                     i+=1
         # Note off   0x8_
         # Note on    0x9_
                 elif (0x80 <= status_byte <= 0x9F):
                     data1 = ff.read(1)[0]
                     data2 = ff.read(1)[0]
-                    if status_byte==0x90 and data2 == 0:
-                        status_byte=0x80
+                    if (0x90 <= status_byte <= 0x9F) and data2 == 0:
+                        status_byte&=0x8F
                     notemsg = [status_byte, data1, data2] 
-                    print("note on ch ",status_byte & 0x0F, data1, data2)
+                    #print("--note on/off ch ",status_byte & 0x0F, data1, data2)
+                    if(timeDelta > 0):
+                        time.sleep(tick*timeDelta)
                     out.send_message(notemsg)
                     i+=2
         # Polyphonic Key Pressure  0xA_ (Aftertouch)
@@ -225,8 +267,18 @@ def parse(portNum,file):
                     data1 = ff.read(1)[0]
                     data2 = ff.read(1)[0]
                     notemsg = [status_byte, data1, data2] 
+                    if(timeDelta > 0):
+                        time.sleep(tick*timeDelta)
                     out.send_message(notemsg)
+                    
+                    #print("--polyphonic/control/pitch cmd: ", status_byte)
                     i+=2
+                else:
+                    print("------unrecognized event ", status_byte)
+                last_cmd = status_byte
+                #print("last cmd ",last_cmd)
+                    
+                    
     except FileNotFoundError:
         print(f"File '{filename}' not found.")
     except Exception as e:
