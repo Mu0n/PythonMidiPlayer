@@ -1,6 +1,7 @@
 # Usage
 
 ```python
+python midi_parser.py *midi out port* *.mid file name*
 python midi_parser.py 0 canyon.mid
 ```
 
