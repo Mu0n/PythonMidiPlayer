@@ -47,9 +47,11 @@ def parse(portNum,file):
             ppq = 0 #ppq read from header
             tick = 0 #millisecond per tick
             
+            status_byte = 0 #status byte for reading MIDI commands
+            finished_tracks = 0 #number of tracks that have been read so far
+            
             data_buffer_len = len(bytearray(ff.read()))
             ff.seek(0)
-            
             
             print("MIDI file name: ",file)
             print("-------------")
@@ -83,59 +85,50 @@ def parse(portNum,file):
                 nValue2 = 0
                 nValue3 = 0
                 nValue4 = 0
-                #print(i)
-                # time delta portion
-                
+               
+                #time delta reading. Assume it's at most 4 bytes (7 bits each, 
+                #total max of 28 sign. bits with 4 extra padded 0's
                 nValue = int.from_bytes(ff.read(1))
-                #print("nValue ",nValue)
                 i+=1
-                
-                #print("nValue before 0x8_ ",nValue)
                 if nValue & 0x0080:
-                    #print("nValue before crop ",nValue)
-                    nValue &= 0x007F
-                    #print("nValue after crop ",nValue)
-                    nValue <<= 7
-                    #print("nValue after shift ",nValue)
+                    nValue &= 0x007F # toss out the MSB
+                    nValue <<= 7     # shift it 7 positions to make room for the next 7bits
                     nValue2 = int.from_bytes(ff.read(1))
                     i+=1
                     if nValue2 & 0x0080:
-                        nValue2 &= 0x007F
-                        nValue2 <<= 7
-                        nValue <<= 7
+                        nValue2 &= 0x007F # toss out the MSB
+                        nValue2 <<= 7     # shift it 7 positions to make room for the next 7bits
+                        nValue <<= 7      # shift it 7 positions to make room for the next 7bits
                         nValue3 = int.from_bytes(ff.read(1))
                         i+=1
                         if nValue3 & 0x0080:
-                            nValue3 &= 0x007F
-                            nValue3 <<= 7
-                            nValue2 <<= 7
-                            nValue <<= 7
+                            nValue3 &= 0x007F # toss out the MSB
+                            nValue3 <<= 7     # shift it 7 positions to make room for the next 7bits
+                            nValue2 <<= 7     # shift it 7 positions to make room for the next 7bits
+                            nValue <<= 7      # shift it 7 positions to make room for the next 7bits
                             nValue4 = int.from_bytes(ff.read(1))
                             i+=1
                 timeDelta = nValue | nValue2 | nValue3 | nValue4
-                #print("timeDelta ",timeDelta)
+                
+                
+                #status byte / MIDI message reading
                 status_byte = ff.read(1)[0]
                 i+=1 
-
-                #check for run-on commands that don't repeat the status_byte
+                
+                #First, check for run-on commands that don't repeat the status_byte
                 if ( status_byte & 0x80) == 0x00:
-                    #print("********run-on command detected with cmd ",last_cmd)
                     status_byte = last_cmd
                     i-=1
                     ff.seek(i) #go back 1 spot so it can read the data properly
                     
-                # MIDI Meta-event portion
+                #Second, deal with MIDI meta-event commands that start with 0xFF.
                 if (status_byte & 0xFF) == 0xFF:
                     meta_byte = int.from_bytes(ff.read(1))
-                    print("Status Byte",status_byte,"Meta-Event",meta_byte)
                     i+=1
                     if meta_byte == MetaSequence:
                         data1=ff.read(1)[0]
                         data2=ff.read(1)[0]
                         notemsg = [status_byte, meta_byte, data1, data2] 
-                        #print ("message is ",notemsg)
-                        out.send_message(notemsg)
-                        print("  Sequence Number: ", data1, data2)
                         i+=2
                     elif meta_byte == MetaText:
                         tLen = int.from_bytes(ff.read(1))
@@ -182,14 +175,9 @@ def parse(portNum,file):
                     elif meta_byte == MetaChannelPrefix:
                         data1=ff.read(1)[0]
                         data2=ff.read(1)[0]
-                        #notemsg = [status_byte, meta_byte, data1, data2] 
-                        #out.send_message(notemsg)
-                        print("MIDI Channel Prefix: ", data1, data2)
                         i+=2	
                     elif meta_byte == MetaEndOfTrack:
                         data1=ff.read(1)[0]
-                        #notemsg = [status_byte, meta_byte, data1] 
-                        #out.send_message(notemsg)
                         i+=1
                         print("--------------------------------------------------- END OF TRACK")
                     elif meta_byte == MetaSetTempo:
@@ -198,9 +186,6 @@ def parse(portNum,file):
                         data3=ff.read(1)[0]
                         data4=ff.read(1)[0]
                         bpm = 6e7/(data2<<16 | data3 <<8 | data4)
-                        #notemsg = [status_byte, meta_byte, data1, data2,data3,data4] 
-                        #out.send_message(notemsg)
-                        print("  Tempo: ", data1, data2, data3, data4, " beats per min: ", int(bpm))
                         tick = 60./(bpm*ppq)
                         i+=4	
                     elif meta_byte == MetaSMPTEOffset:
@@ -210,10 +195,6 @@ def parse(portNum,file):
                         data4=ff.read(1)[0]
                         data5=ff.read(1)[0]
                         data6=ff.read(1)[0]
-                        #notemsg = [0xF0, meta_byte, data1, data2,data3,data4,data5,data6] 
-                        #print ("SMTP message is ",notemsg)
-                        #out.send_message(notemsg)
-                        print("  SMPTE Offset: ", data1, data2, data3, data4, data5, data6)
                         i+=6	
                     elif meta_byte == MetaTimeSignature:
                         data1=ff.read(1)[0]
@@ -221,44 +202,45 @@ def parse(portNum,file):
                         data3=ff.read(1)[0]
                         data4=ff.read(1)[0]
                         data5=ff.read(1)[0]
-                        #notemsg = [status_byte, meta_byte, data1, data2,data3,data4,data5] 
-                        #out.send_message(notemsg)
-                        print("  Key Signature: ", data1, data2, data3, data4, data5)
                         i+=5	
                     elif meta_byte == MetaKeySignature:
                         data1=ff.read(1)[0]
                         data2=ff.read(1)[0]
                         data3=ff.read(1)[0]
-                        #notemsg = [status_byte, meta_byte, data1, data2,data3] 
-                        #out.send_message(notemsg)
-                        print("  Key Signature: ", data1, data2, data3)
                         i+=3
                     elif meta_byte == MetaSequencerSpecific:
                         pass	
                     else:
                         print("Unrecognised MetaEvent: ")
-                    #print("at i: ",i)  
+                        
+        #Third, deal with regular MIDI commands
+        
+        #MIDI commands with only 1 data byte
         # Program change   0xC_
         # Channel Pressure 0xD_
                 elif 0xC0 <= status_byte <= 0xDF:
                     data1 = ff.read(1)[0]
                     notemsg = [status_byte,data1]
+                    if(timeDelta > 0):
+                        time.sleep(tick*timeDelta)
                     out.send_message(notemsg)
-                    #print("--program/channel change: ", status_byte)
                     i+=1
+                    
+        #MIDI commands for note on and note off with 2 data bytes
         # Note off   0x8_
         # Note on    0x9_
                 elif (0x80 <= status_byte <= 0x9F):
                     data1 = ff.read(1)[0]
                     data2 = ff.read(1)[0]
-                    if (0x90 <= status_byte <= 0x9F) and data2 == 0:
-                        status_byte&=0x8F
+                    if (0x90 <= status_byte <= 0x9F) and data2 == 0: 
+                        status_byte&=0x8F #note on with velocity 0 is a note off
                     notemsg = [status_byte, data1, data2] 
-                    #print("--note on/off ch ",status_byte & 0x0F, data1, data2)
                     if(timeDelta > 0):
                         time.sleep(tick*timeDelta)
                     out.send_message(notemsg)
                     i+=2
+                    
+        #MIDI commands with 2 data bytes
         # Polyphonic Key Pressure  0xA_ (Aftertouch)
         # Control Change           0xB_
         # (0xC_ and 0xD_ have been taken care of earlier already)
@@ -270,14 +252,10 @@ def parse(portNum,file):
                     if(timeDelta > 0):
                         time.sleep(tick*timeDelta)
                     out.send_message(notemsg)
-                    
-                    #print("--polyphonic/control/pitch cmd: ", status_byte)
                     i+=2
                 else:
                     print("------unrecognized event ", status_byte)
                 last_cmd = status_byte
-                #print("last cmd ",last_cmd)
-                    
                     
     except FileNotFoundError:
         print(f"File '{filename}' not found.")
@@ -285,7 +263,4 @@ def parse(portNum,file):
         print(f"Error reading the file: {e}")
     
 # --- Main entry point ---
-
-parse(argv[1],argv[2])
-
-       
+parse(argv[1],argv[2])   #1st arg: which MIDI port is to be used (0,1,...); 2nd arg: .mid file name
