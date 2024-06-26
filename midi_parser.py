@@ -31,6 +31,7 @@
 
 import time
 import rtmidi
+import sys
 from sys import argv
 
 # --- MIDI spec hard coded values ---
@@ -58,13 +59,64 @@ class aMIDIEvent:
     deltaToGo = 0
     statusB = 0x00
     dataB = None #list can't be initialized here
+   
+# --- detect the no of tracks, length of each track, to see if .mid chunks make sense
+def detectstructure(buffer):
+    bpm = 0 #beat per minute
+    ppq = 0 #ppq read from header
+    tick = 0 #millisecond per tick
     
-class trackEvents:
-    eventList = None #list can't be initialized here
-
-
+    trackcount = 0 #number of tracks detected
+    i = 0 #main array parsing index
+            
+    print("MIDI file header")
+    print("-------------")
+    hdrTag = buffer[i:(i+4)]
+    i+=4
+    print(hdrTag)
+    size = buffer[i:(i+4)]
+    print("size ",int.from_bytes(size))
+   
+    i+=4
+    print("format type ",int.from_bytes(buffer[i:(i+2)]))
+    i+=2
+    trackcount = int.from_bytes(buffer[i:(i+2)])
+    i+=2
+    print("number of tracks ",trackcount)
     
-
+    tdiv = buffer[i:(i+2)]
+    i+=2
+    
+    if (tdiv[0] & 0x80) == 0x00:
+        print("time division is ticks per beat, ticks=",int.from_bytes(tdiv))
+        ppq = int.from_bytes(tdiv)
+    elif (tdiv[0] & 0x80) == 0x80:
+        print("time division is frames per s= ",int.from_bytes(tdiv[1])) 
+        
+    totalLen = len(buffer)
+    print("total len=",totalLen)
+    current_track=0
+    while i < totalLen:
+        print("i=",i)
+        current_track+=1
+        track_hdr = buffer[i:(i+4)]
+        i+=4
+        print("-------------")
+        print("Track header for track #", current_track," ",track_hdr)
+        print("-------------")
+        tracklength = int.from_bytes(buffer[i:(i+4)])
+        print("1st byte=",buffer[i])
+        print("2nd byte=",buffer[i+1])
+        print("3rd byte=",buffer[i+2])
+        print("4th byte=",buffer[i+3])
+        i+=4
+        print("length: ",tracklength)
+        print("-------------")
+        i+=tracklength
+    
+    
+    
+    
 # --- Opening a port to MIDI out ---
 # using the rtmidi package to fetch and open a MIDI out port.
 # note: you may need to use another port number than mine depending on your system
@@ -107,9 +159,11 @@ def parse(buffer):
     bpm = 0 #beat per minute
     ppq = 0 #ppq read from header
     tick = 0 #millisecond per tick
+    myParsedEventList = [] #init the big list of all parsed events being prepped
+    
     
     trackcount = 0 #number of tracks detected
-    finished_tracks = 0 #number of tracks that have been read so fa
+    current_track = 0 #number of tracks that have been read so fa
     i = 0 #main array parsing index
             
     print("MIDI file header")
@@ -128,6 +182,7 @@ def parse(buffer):
     print("number of tracks ",trackcount)
     
     
+    
     tdiv = buffer[i:(i+2)]
     i+=2
     
@@ -137,27 +192,38 @@ def parse(buffer):
     elif (tdiv[0] & 0x80) == 0x80:
         print("time division is frames per s= ",int.from_bytes(tdiv[1])) 
     
-    finished_tracks = 0
+    current_track = 0
     tracklength = 1 #value of 1 by default, will get changed once a track header is read
     cementedStartI = i
     totalLen = len(buffer)
-    while i < totalLen:
+    while i < totalLen: # main loop, parse every remaining tracks
         print("i=",i)
-        finished_tracks+=1
+        current_track+=1
+        if(current_track>trackcount):
+            break
+        #now that we're sure a track has to happen, instanciate the track of elements item
+        aTOE = [] #init the list of events being worked on
+        
+        
         track_hdr = buffer[i:(i+4)]
         i+=4
         print("-------------")
-        print("Track header for track #", finished_tracks)
+        print("Track header for track #", current_track," ",track_hdr)
         print("-------------")
-        print(track_hdr)
-
         tracklength = int.from_bytes(buffer[i:(i+4)])
+        print("1st byte=",buffer[i])
+        print("2nd byte=",buffer[i+1])
+        print("3rd byte=",buffer[i+2])
+        print("4th byte=",buffer[i+3])
         i+=4
         print("length: ",tracklength)
         print("-------------")
     
         last_cmd = 0x00
-        while i < tracklength:
+        currentI = i #check the current location from which to delimit the track reading
+        print("current index i=",i," will finish track at i=",tracklength+currentI)
+        while i < (tracklength + currentI):
+           
             nValue = 0
             nValue2 = 0
             nValue3 = 0
@@ -264,7 +330,9 @@ def parse(buffer):
                     data1=buffer[i:(i+1)]
                     i+=1
                     print("--------------------------------------------------- END OF TRACK")
-                    pass
+                    #append the track of events to the global list
+                    myParsedEventList.append(aTOE)
+                    break
                 elif meta_byte == MetaSetTempo:
                     data1=buffer[i:(i+1)]
                     i+=1
@@ -308,9 +376,9 @@ def parse(buffer):
                     data3=buffer[i:(i+1)]
                     i+=1
                 elif meta_byte == MetaSequencerSpecific:
-                    pass	
+                    continue	
                 else:
-                    print("Unrecognised MetaEvent: ")
+                    print("Unrecognised MetaEvent: sb=",status_byte," mb=",meta_byte)
                     
     #Third, deal with regular MIDI commands
     
@@ -346,36 +414,90 @@ def parse(buffer):
                 forWhichChannel = status_byte & 0x0F
                 
             else:
-                print("------unrecognized event ", status_byte)
+                print("------unrecognized event sb=", status_byte)
             last_cmd = status_byte
         
             if(recognizedCmdForPlayback):
-                
                 if(timeDelta > 0):
-                    time.sleep(tick*timeDelta)
+                    pass
+                   #time.sleep(tick*timeDelta)
                 finalMsg = bytearray([status_byte])
                 for item in dataCombo:
                     finalMsg.extend(item)
-                out.send_message(finalMsg)
-                '''
+                #out.send_message(finalMsg)
+                
                 newEvent = aMIDIEvent()
                 newEvent.deltaToGo = tick*timeDelta
                 newEvent.statusB = status_byte
                 newEvent.dataB = []
                 newEvent.dataB += dataCombo
-                track1Events.eventList.append(newEvent)
-                '''
-            
+                aTOE.append(newEvent)
+                
+    return myParsedEventList        
 
-
-def play():
-    while True:
-        a=0
-        #check the lowest time delta of all the tracks
-        #wait for that time and send the command
-        #lower every pending event delta by that amount
-        #if the event was an end track, then set boolean ended to true for that track
+'''
+class aMIDIEvent:
+    deltaToGo = 0
+    statusB = 0x00
+    dataB = None #list can't be initialized here
+'''
+def playback(myTOE):
+    numberTracks = len(myTOE)
+    eventsLeftPerTrack = [] #contains the number of pending events
+    pendingEvents = [] #contains the queued up next events to play per track
+    print("number of tracks: ",numberTracks)
+    for i in range(len(myTOE)):
+        nbEvents = len(myTOE[i])
+        eventsLeftPerTrack.append(nbEvents) #put number of event in pending count
+        if(nbEvents>0):
+            pendingEvents.append(myTOE[i][0]) #slot in the first event if there's one
+        else:
+            #prep a dummy event to have at least something
+            dummyEvent = aMIDIEvent()
+            pendingEvents.append(dummyEvent)
+    print("eventsLeftPerTrack = ",eventsLeftPerTrack)
+    #print("pendingEvents =", pendingEvents)
+    #main loop to exhaust all events
+    while(sum(eventsLeftPerTrack)>0):
     
+    #find the list which has an event with the lowest timeDelta
+        lowestIndex = 0 #assume track 0 is the next event to play
+        lowestTimeFound = sys.maxsize #assume lowest is the worst possible
+        for i in range(len(eventsLeftPerTrack)):
+            #print("lowest search i=",i)
+            if eventsLeftPerTrack[i] == 0:
+                continue #skip the loop if one track has been exhausted
+            anEvent = pendingEvents[i]
+            if anEvent.deltaToGo < lowestTimeFound:
+                lowestIndex = i #found it at track i
+                lowestTimeFound = anEvent.deltaToGo #keep track of this for later so we can reduce every other pending deltas by this amount
+            
+    #perform the event
+        if(pendingEvents[lowestIndex].deltaToGo > 0): #only deal with delay if there's a delay
+            time.sleep(pendingEvents[lowestIndex].deltaToGo)
+        finalMsg = bytearray([pendingEvents[lowestIndex].statusB])
+        for item in pendingEvents[lowestIndex].dataB:
+            finalMsg.extend(item)
+        out.send_message(finalMsg)
+    #slot in the next event
+        eventsLeftPerTrack[lowestIndex]-=1 #reduce # of pending events for that track by 1 since we consumed one event there
+        totalEvents = len(myTOE[lowestIndex])
+        doneEvents = eventsLeftPerTrack[lowestIndex]
+        #print("done / total = ",doneEvents, " / ",totalEvents)
+        nextEventIndex =  totalEvents-doneEvents-1
+        #print("prep next event at index=",lowestIndex, "nextEventIndex=",nextEventIndex)
+        pendingEvents[lowestIndex]=myTOE[lowestIndex][nextEventIndex] #slots in the correct next event
+        
+    #lower every other pending event's time delta with the one we just did
+        for i in range(len(pendingEvents)):
+            if pendingEvents[i] == 0:
+                continue #skip the loop if there's nothing to consider
+            if i == lowestIndex:
+                continue #skip if this track was the one being dealt with
+            pendingEvents[i].deltaToGo -= lowestTimeFound #reduce the other events
+            
+            
+            
 # --- Main entry point ---
 
 out = rtmidi.MidiOut()
@@ -384,9 +506,11 @@ print(ports)
 print("port chosen: ",argv[1]) #which MIDI port is to be used (0,1,...)
 out.open_port(int(argv[1]))
 buf = read_until_mthd(argv[2]) #open midi file and get to MThd, ignore previous bytes; 2nd arg: .mid file name
-parse(buf)  #parse the song and put it in a structure
-#playback the song
 
-#track1Events = trackEvents()
-#track1Events.eventList = [] #init here
-#print("track1 events ", len(track1Events.eventList))
+
+detectstructure(buf)
+myTracksOfEvents = parse(buf)  #parse the song and put it in a structure
+playback(myTracksOfEvents) 
+
+#for x in myTracksOfEvents:
+#    print("track len ",len(x))
