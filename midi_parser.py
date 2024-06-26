@@ -59,6 +59,7 @@ class aMIDIEvent:
     deltaToGo = 0
     statusB = 0x00
     dataB = None #list can't be initialized here
+    msgToSend = None 
    
 # --- detect the no of tracks, length of each track, to see if .mid chunks make sense
 def detectstructure(buffer):
@@ -431,6 +432,7 @@ def parse(buffer):
                 newEvent.statusB = status_byte
                 newEvent.dataB = []
                 newEvent.dataB += dataCombo
+                newEvent.msgToSend = finalMsg
                 aTOE.append(newEvent)
                 
     return myParsedEventList        
@@ -475,10 +477,8 @@ def playback(myTOE):
     #perform the event
         if(pendingEvents[lowestIndex].deltaToGo > 0): #only deal with delay if there's a delay
             time.sleep(pendingEvents[lowestIndex].deltaToGo)
-        finalMsg = bytearray([pendingEvents[lowestIndex].statusB])
-        for item in pendingEvents[lowestIndex].dataB:
-            finalMsg.extend(item)
-        out.send_message(finalMsg)
+        
+        out.send_message(pendingEvents[lowestIndex].msgToSend)
     #slot in the next event
         eventsLeftPerTrack[lowestIndex]-=1 #reduce # of pending events for that track by 1 since we consumed one event there
         totalEvents = len(myTOE[lowestIndex])
