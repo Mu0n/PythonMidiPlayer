@@ -48,6 +48,7 @@ MetaLyrics         = 0x05
 MetaMarker         = 0x06
 MetaCuePoint       = 0x07
 MetaChannelPrefix  = 0x20
+MetaChangePort     = 0x21
 MetaEndOfTrack     = 0x2F
 MetaSetTempo       = 0x51
 MetaSMPTEOffset    = 0x54
@@ -314,6 +315,8 @@ def parse(buffer):
                     i+=1
                     data2=buffer[i:(i+1)]
                     i+=1	
+                elif meta_byte == MetaChangePort:
+                    i+=2
                 elif meta_byte == MetaEndOfTrack:
                     data1=buffer[i:(i+1)]
                     i+=1
